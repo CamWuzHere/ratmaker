@@ -1,110 +1,67 @@
-import shutil
-import time
-import ctypes
+import shutil, time, ctypes, threading
 from pathlib import Path
 
-IMAGE_NAME = "rat.jpg"
-PUBLIC_DOWNLOADS = Path(r"C:\Users\Public\Downloads")
-CHECK_INTERVAL = 0.5
-ZERO_WIDTH = "\u200B"
+IMG="rat.jpg"
+PD=Path(r"C:\Users\Public\Downloads")
+ZW="\u200B"
+STOP=threading.Event()
+MOD_ALT=0x0001;MOD_CTRL=0x0002;WM_HOTKEY=0x0312;HK=1
 
+def r_desktop(): 
+    d=Path.home()/ "Desktop"
+    return d if d.exists() else Path(r"C:\Users\Public\Desktop") if Path(r"C:\Users\Public\Desktop").exists() else Path.home()
 
-def refresh_desktop():
-    """Force Windows Explorer to refresh the desktop once."""
-    try:
-        ctypes.windll.shell32.SHChangeNotify(0x8000000, 0x1000, None, None)
-    except Exception:
-        pass
+def ensure_src():
+    f=PD/IMG
+    if not f.exists(): PD.mkdir(parents=True,exist_ok=True); f.write_bytes(b"\x89PNG\r\n\x1a\nRAT_PLACEHOLDER")
+    return f
 
+def copy_rat(c):
+    s=ensure_src()
+    n=ZW*c+IMG
+    try: shutil.copy2(s,r_desktop()/n); return n
+    except: return ""
 
-def get_desktop_path() -> Path:
-    desktop = Path.home() / "Desktop"
-    if desktop.exists():
-        return desktop
-    alt = Path(r"C:\Users\Public\Desktop")
-    if alt.exists():
-        return alt
-    return Path.home()
+def list_files(): return {f.name for f in r_desktop().iterdir() if f.is_file()}
 
+def rm_zw(): 
+    for f in r_desktop().iterdir(): 
+        if f.is_file() and f.name.startswith(ZW) and f.name.endswith(IMG): 
+            f.unlink()
+    ctypes.windll.shell32.SHChangeNotify(0x8000000,0x1000,None,None)
 
-def ensure_source_image() -> Path:
-    src = PUBLIC_DOWNLOADS / IMAGE_NAME
-    if not src.exists():
-        PUBLIC_DOWNLOADS.mkdir(parents=True, exist_ok=True)
-        with open(src, "wb") as f:
-            f.write(b"\x89PNG\r\n\x1a\nRAT_PLACEHOLDER")
-    return src
+def worker():
+    t=[];c=1
+    n=copy_rat(c)
+    if n: t.append(n);c+=1
+    while not STOP.is_set():
+        d=[f for f in t if f not in list_files()]
+        if d:
+            time.sleep(0.2);d=[f for f in d if f not in list_files()];new=[]
+            for _ in d:
+                for _ in range(2):
+                    if STOP.is_set(): break
+                    n=copy_rat(c)
+                    if n:new.append(n);c+=1
+                if STOP.is_set(): break
+            t=[f for f in t if f not in d]+new
+            if new: ctypes.windll.shell32.SHChangeNotify(0x8000000,0x1000,None,None)
+        time.sleep(0.5)
 
+def hotkey():
+    u=ctypes.windll.user32
+    if not u.RegisterHotKey(None,HK,MOD_CTRL|MOD_ALT,ord('X')): return
+    msg=ctypes.wintypes.MSG()
+    while not STOP.is_set():
+        got=u.GetMessageW(ctypes.byref(msg),None,0,0)
+        if got==0: break
+        if msg.message==WM_HOTKEY and msg.wParam==HK:
+            STOP.set(); rm_zw(); break
+        u.TranslateMessage(ctypes.byref(msg)); u.DispatchMessageW(ctypes.byref(msg))
+    u.UnregisterHotKey(None,HK)
 
-def make_invisible_name(base: str, count: int) -> str:
-    return ZERO_WIDTH * count + base
-
-
-def copy_rat(count: int) -> str:
-    """Copy rat.jpg to Desktop with invisible counter."""
-    source = ensure_source_image()
-    name = make_invisible_name(IMAGE_NAME, count)
-    dest = get_desktop_path() / name
-    try:
-        shutil.copy2(source, dest)
-        return name
-    except Exception:
-        return ""
-
-
-def list_desktop_files() -> set:
-    desktop = get_desktop_path()
-    try:
-        return {f.name for f in desktop.iterdir() if f.is_file()}
-    except Exception:
-        return set()
-
-
-def main():
-    tracked_files = []
-    counter = 1
-
-    # Place first rat
-    name = copy_rat(counter)
-    if name:
-        tracked_files.append(name)
-        counter += 1
-
-    try:
-        while True:
-            desktop_files = list_desktop_files()
-            deleted = [f for f in tracked_files if f not in desktop_files]
-
-            if deleted:
-                time.sleep(0.2)  # small delay
-                refreshed = list_desktop_files()
-                deleted = [f for f in deleted if f not in refreshed]
-                if not deleted:
-                    continue
-
-                new_copies = []
-
-                # Replace each deleted file with two new copies
-                for _ in deleted:
-                    for _ in range(2):
-                        name = copy_rat(counter)
-                        if name:
-                            new_copies.append(name)
-                            counter += 1
-
-                # Update tracked files
-                tracked_files = [f for f in tracked_files if f not in deleted]
-                tracked_files.extend(new_copies)
-
-                # Refresh desktop only once after all new copies
-                if new_copies:
-                    refresh_desktop()
-
-            time.sleep(CHECK_INTERVAL)
-
-    except KeyboardInterrupt:
-        pass
-
-
-if __name__ == "__main__":
-    main()
+t=threading.Thread(target=worker,daemon=True)
+t.start()
+try: hotkey()
+except KeyboardInterrupt: STOP.set(); rm_zw()
+t.join(5)
